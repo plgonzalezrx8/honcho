@@ -26,7 +26,7 @@ from .backend import CompletionResult as BackendCompletionResult
 from .backend import StreamChunk as BackendStreamChunk
 from .backend import ToolCallResult
 from .capture import build_captured_call, dispatch_captured_call, has_exporters
-from .registry import CLIENTS, backend_for_provider
+from .registry import CLIENTS, aclient_for_model_config, backend_for_provider
 from .request_builder import execute_completion, execute_stream
 from .runtime import (
     AttemptPlan,
@@ -439,20 +439,13 @@ async def honcho_llm_call_inner(
     post-stream at this layer; aggregate envelopes (DialecticCompletedEvent
     etc.) carry the accurate totals.
     """
-    client = client_override or CLIENTS.get(provider)
-    if client is None:
-        raise ValueError(f"Missing client for {provider}")
-
     # Stamp this trace (user_id/session_id/metadata) now that the @observe
     # span is open and the resolved provider/model are known. Set early so the
     # annotation lands even on the stream path, where the span closes once the
     # generator is returned (before chunks drain).
     annotate_current_langfuse_trace(provider, model, telemetry=telemetry)
-
     if messages is None:
         messages = [{"role": "user", "content": prompt}]
-
-    backend = backend_for_provider(provider, client)
 
     effective_config = effective_config_for_call(
         selected_config=selected_config,
@@ -463,7 +456,6 @@ async def honcho_llm_call_inner(
         thinking_budget_tokens=thinking_budget_tokens,
         reasoning_effort=reasoning_effort,
     )
-
     # Explicit generation input + tuning knobs (replaces @observe auto-capture,
     # which would serialize the live client / api key). Set before the stream
     # branch so it lands on the generation span for both paths. Guard on inline
@@ -484,6 +476,30 @@ async def honcho_llm_call_inner(
                 response_model=response_model,
             ),
         )
+    if client_override is not None:
+        client = client_override
+    elif (
+        effective_config.auth_mode == "api_key"
+        and effective_config.api_key is None
+        and effective_config.base_url is None
+    ):
+        client = CLIENTS.get(effective_config.transport)
+        if client is None:
+            client = await aclient_for_model_config(
+                effective_config.transport,
+                effective_config,
+            )
+    else:
+        client = await aclient_for_model_config(
+            effective_config.transport,
+            effective_config,
+        )
+    backend = backend_for_provider(
+        effective_config.transport,
+        client,
+        effective_config,
+    )
+    effective_max_tokens = effective_config.max_output_tokens or max_tokens
     # json_mode + verbosity are per-call transport toggles, not ModelConfig
     # knobs — they pass through extra_params. execute_completion merges
     # build_config_extra_params(effective_config) on top for top_p/seed/etc.
@@ -506,7 +522,7 @@ async def honcho_llm_call_inner(
                 backend,
                 effective_config,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
                 tools=tools,
                 tool_choice=tool_choice,
                 response_format=response_model,
@@ -519,7 +535,7 @@ async def honcho_llm_call_inner(
                 telemetry=telemetry,
                 provider=provider,
                 model=model,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
                 duration_ms=(time.perf_counter() - stream_start) * 1000,
                 has_tools=bool(tools),
                 was_stream=True,
@@ -543,7 +559,7 @@ async def honcho_llm_call_inner(
                     telemetry=telemetry,
                     provider=provider,
                     model=model,
-                    max_tokens=max_tokens,
+                    max_tokens=effective_max_tokens,
                     duration_ms=(time.perf_counter() - stream_start) * 1000,
                     has_tools=bool(tools),
                     was_stream=True,
@@ -562,7 +578,7 @@ async def honcho_llm_call_inner(
             backend,
             effective_config,
             messages=messages,
-            max_tokens=max_tokens,
+            max_tokens=effective_max_tokens,
             tools=tools,
             tool_choice=tool_choice,
             response_format=response_model,
@@ -588,7 +604,7 @@ async def honcho_llm_call_inner(
             telemetry=telemetry,
             provider=provider,
             model=model,
-            max_tokens=max_tokens,
+            max_tokens=effective_max_tokens,
             duration_ms=(time.perf_counter() - start) * 1000,
             has_tools=bool(tools),
             was_stream=False,

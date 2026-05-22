@@ -66,6 +66,8 @@ Some OpenAI-compatible providers don't support OpenAI Structured Outputs (`json_
 This setting only applies to the **deriver** on the **`openai`** transport — it is the only feature that uses structured output. The dialectic, summarizer, and dreamer don't request structured output, so the setting has no effect there, and the anthropic/gemini transports reject it.
 </Note>
 
+For text-generation calls, `transport = "openai"` can also use ChatGPT Codex subscription OAuth instead of an OpenAI API key. Set `MODEL_CONFIG__OVERRIDES__AUTH_MODE=codex_oauth` on the relevant Deriver, Dialectic, Summary, or Dream model config. Honcho reads Codex CLI tokens from `$CODEX_HOME/auth.json` or `~/.codex/auth.json`. Embeddings still need a configured embedding provider key.
+
 ### Tiered Model Setup
 
 Once you're past initial setup, you can assign different models per feature for better cost/quality tradeoffs. This example uses OpenRouter with light/medium/heavy tiers:
