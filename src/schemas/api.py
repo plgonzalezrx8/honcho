@@ -609,6 +609,10 @@ class RuntimeModelInfo(BaseModel):
         default=None,
         description="Configured provider base URL, when overridden",
     )
+    fallback: Self | None = Field(
+        default=None,
+        description="Final-retry fallback model metadata, when configured",
+    )
 
 
 class LLMRuntimeInfo(BaseModel):

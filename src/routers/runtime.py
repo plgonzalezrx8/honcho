@@ -8,10 +8,12 @@ from src.config import (
     ConfiguredModelSettings,
     EmbeddingModelConfig,
     ModelConfig,
+    ResolvedFallbackConfig,
     resolve_embedding_model_config,
     resolve_model_config,
     settings,
 )
+from src.llm.codex_oauth import DEFAULT_CODEX_BASE_URL
 from src.llm.credentials import default_transport_api_key
 from src.security import require_auth
 
@@ -32,35 +34,52 @@ def _default_transport_base_url(transport: str) -> str | None:
     return None
 
 
-def _effective_base_url(config: ModelConfig | EmbeddingModelConfig) -> str | None:
+RuntimeModelConfig = ModelConfig | ResolvedFallbackConfig | EmbeddingModelConfig
+
+
+def _effective_base_url(config: RuntimeModelConfig) -> str | None:
     if isinstance(config, EmbeddingModelConfig):
         return config.base_url
+    if config.transport == "openai" and config.auth_mode == "codex_oauth":
+        return config.base_url or DEFAULT_CODEX_BASE_URL
     return config.base_url or _default_transport_base_url(config.transport)
 
 
-def _provider_label(transport: str, base_url: str | None) -> str:
-    if transport == "openai" and base_url and "openrouter" in base_url.lower():
+def _provider_label(config: RuntimeModelConfig, base_url: str | None) -> str:
+    if (
+        not isinstance(config, EmbeddingModelConfig)
+        and config.transport == "openai"
+        and config.auth_mode == "codex_oauth"
+    ):
+        return "codex_oauth"
+    if config.transport == "openai" and base_url and "openrouter" in base_url.lower():
         return "openrouter"
-    return transport
+    return config.transport
 
 
-def _auth_mechanism(config: ModelConfig | EmbeddingModelConfig) -> str:
+def _auth_mechanism(config: RuntimeModelConfig) -> str:
     explicit_auth = getattr(config, "auth_mode", None)
-    if isinstance(explicit_auth, str) and explicit_auth:
+    if explicit_auth == "codex_oauth":
         return explicit_auth
     if config.api_key or default_transport_api_key(config.transport):
         return "api_key"
     return "none"
 
 
-def _model_info(config: ModelConfig | EmbeddingModelConfig) -> schemas.RuntimeModelInfo:
+def _model_info(config: RuntimeModelConfig) -> schemas.RuntimeModelInfo:
     base_url = _effective_base_url(config)
+    fallback = (
+        _model_info(config.fallback)
+        if isinstance(config, ModelConfig) and config.fallback is not None
+        else None
+    )
     return schemas.RuntimeModelInfo(
         model=config.model,
-        provider=_provider_label(config.transport, base_url),
+        provider=_provider_label(config, base_url),
         transport=config.transport,
         auth_mechanism=_auth_mechanism(config),
         base_url=base_url,
+        fallback=fallback,
     )
 
 
@@ -86,9 +105,7 @@ def _llm_models() -> dict[str, schemas.RuntimeModelInfo]:
     return models
 
 
-@router.get("/llm", response_model=schemas.LLMRuntimeInfo)
-async def get_llm_runtime() -> schemas.LLMRuntimeInfo:
-    """Return the configured LLM models currently used by Honcho agents."""
+def _get_llm_runtime_info() -> schemas.LLMRuntimeInfo:
     models = _llm_models()
     current_source = "dialectic.low"
     return schemas.LLMRuntimeInfo(
@@ -96,6 +113,12 @@ async def get_llm_runtime() -> schemas.LLMRuntimeInfo:
         current=models[current_source],
         models=models,
     )
+
+
+@router.get("/llm", response_model=schemas.LLMRuntimeInfo)
+async def get_llm_runtime() -> schemas.LLMRuntimeInfo:
+    """Return the configured LLM models currently used by Honcho agents."""
+    return _get_llm_runtime_info()
 
 
 @router.get("/embeddings", response_model=schemas.EmbeddingRuntimeInfo)
@@ -113,7 +136,7 @@ async def get_embedding_runtime() -> schemas.EmbeddingRuntimeInfo:
 @router.get("/auth", response_model=schemas.RuntimeAuthInfo)
 async def get_runtime_auth() -> schemas.RuntimeAuthInfo:
     """Return provider/auth metadata for the current LLM and embedding paths."""
-    llm_runtime = await get_llm_runtime()
+    llm_runtime = _get_llm_runtime_info()
     return schemas.RuntimeAuthInfo(
         llm_source=llm_runtime.current_source,
         llm=llm_runtime.current,

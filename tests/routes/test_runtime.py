@@ -5,9 +5,11 @@ from fastapi.testclient import TestClient
 from src.config import (
     ConfiguredEmbeddingModelSettings,
     ConfiguredModelSettings,
+    FallbackModelSettings,
     ModelOverrideSettings,
     settings,
 )
+from src.llm.codex_oauth import DEFAULT_CODEX_BASE_URL
 from src.routers.runtime import router
 
 
@@ -45,6 +47,7 @@ def test_llm_runtime_exposes_current_model_provider_and_auth(
         "transport": "openai",
         "auth_mechanism": "api_key",
         "base_url": "https://openrouter.ai/api/v1",
+        "fallback": None,
     }
     assert body["models"]["dialectic.low"] == body["current"]
     assert "deriver" in body["models"]
@@ -71,6 +74,7 @@ def test_embedding_runtime_exposes_model_provider_auth_and_dimensions(
         "transport": "gemini",
         "auth_mechanism": "api_key",
         "base_url": None,
+        "fallback": None,
         "vector_dimensions": 768,
         "dimensions_mode": "auto",
     }
@@ -111,6 +115,7 @@ def test_runtime_endpoints_use_global_provider_credentials_and_base_urls(
         "transport": "openai",
         "auth_mechanism": "api_key",
         "base_url": "https://openrouter.ai/api/v1",
+        "fallback": None,
     }
 
     assert embeddings_response.status_code == 200
@@ -120,6 +125,7 @@ def test_runtime_endpoints_use_global_provider_credentials_and_base_urls(
         "transport": "openai",
         "auth_mechanism": "api_key",
         "base_url": None,
+        "fallback": None,
         "vector_dimensions": 1536,
         "dimensions_mode": "auto",
     }
@@ -134,6 +140,7 @@ def test_runtime_endpoints_use_global_provider_credentials_and_base_urls(
             "transport": "openai",
             "auth_mechanism": "api_key",
             "base_url": None,
+            "fallback": None,
         },
     }
 
@@ -170,3 +177,83 @@ def test_runtime_auth_exposes_current_llm_and_embedding_auth(
     assert body["llm"]["auth_mechanism"] == "api_key"
     assert body["embeddings"]["provider"] == "openai"
     assert body["embeddings"]["auth_mechanism"] == "api_key"
+
+
+def test_runtime_reports_codex_oauth_base_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings.AUTH, "USE_AUTH", False)
+    monkeypatch.setattr(settings.LLM, "OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(
+        settings.DIALECTIC.LEVELS["low"],
+        "MODEL_CONFIG",
+        ConfiguredModelSettings(
+            transport="openai",
+            model="gpt-5.4-codex",
+            overrides=ModelOverrideSettings(auth_mode="codex_oauth"),
+        ),
+    )
+
+    response = _runtime_client().get("/v3/runtime/llm")
+
+    assert response.status_code == 200
+    assert response.json()["current"] == {
+        "model": "gpt-5.4-codex",
+        "provider": "codex_oauth",
+        "transport": "openai",
+        "auth_mechanism": "codex_oauth",
+        "base_url": DEFAULT_CODEX_BASE_URL,
+        "fallback": None,
+    }
+
+
+def test_runtime_reports_missing_api_key_auth_as_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings.AUTH, "USE_AUTH", False)
+    monkeypatch.setattr(settings.LLM, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(
+        settings.DIALECTIC.LEVELS["low"],
+        "MODEL_CONFIG",
+        ConfiguredModelSettings(
+            transport="openai",
+            model="gpt-5.4-mini",
+        ),
+    )
+
+    response = _runtime_client().get("/v3/runtime/llm")
+
+    assert response.status_code == 200
+    assert response.json()["current"]["auth_mechanism"] == "none"
+
+
+def test_llm_runtime_exposes_fallback_model_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings.AUTH, "USE_AUTH", False)
+    monkeypatch.setattr(settings.LLM, "OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.setattr(settings.LLM, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(
+        settings.DIALECTIC.LEVELS["low"],
+        "MODEL_CONFIG",
+        ConfiguredModelSettings(
+            transport="openai",
+            model="gpt-5.4-mini",
+            fallback=FallbackModelSettings(
+                transport="gemini",
+                model="gemini-2.5-flash",
+            ),
+        ),
+    )
+
+    response = _runtime_client().get("/v3/runtime/llm")
+
+    assert response.status_code == 200
+    assert response.json()["current"]["fallback"] == {
+        "model": "gemini-2.5-flash",
+        "provider": "gemini",
+        "transport": "gemini",
+        "auth_mechanism": "none",
+        "base_url": None,
+        "fallback": None,
+    }
