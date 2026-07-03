@@ -26,10 +26,12 @@ class FakeResponsesStream:
         response: SimpleNamespace,
         events: list[SimpleNamespace] | None = None,
         final_exception: Exception | None = None,
+        iteration_exception: Exception | None = None,
     ) -> None:
         self.response: SimpleNamespace = response
         self.events: list[SimpleNamespace] = list(events or [])
         self.final_exception: Exception | None = final_exception
+        self.iteration_exception: Exception | None = iteration_exception
 
     async def __aenter__(self) -> FakeResponsesStream:
         return self
@@ -42,6 +44,10 @@ class FakeResponsesStream:
 
     async def __anext__(self) -> SimpleNamespace:
         if not self.events:
+            if self.iteration_exception is not None:
+                exc = self.iteration_exception
+                self.iteration_exception = None
+                raise exc
             raise StopAsyncIteration
         return self.events.pop(0)
 
@@ -94,6 +100,94 @@ async def test_codex_backend_uses_responses_stream_and_normalizes_text() -> None
     assert call["temperature"] == 0.2
     assert call["store"] is False
     assert call["reasoning"] == {"effort": "low", "summary": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_uses_stream_text_when_final_response_is_empty() -> None:
+    client = Mock()
+    final_response = SimpleNamespace(
+        status="completed",
+        output_text="",
+        output=[],
+        usage=SimpleNamespace(
+            input_tokens=11,
+            output_tokens=7,
+            input_tokens_details=SimpleNamespace(cached_tokens=3),
+        ),
+    )
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            final_response,
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="HONCHO"),
+                SimpleNamespace(type="response.output_text.delta", delta="_OK"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=final_response,
+                ),
+            ],
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    result = await backend.complete(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": "Reply exactly HONCHO_OK"}],
+        max_tokens=100,
+    )
+
+    assert result.content == "HONCHO_OK"
+    assert result.input_tokens == 11
+    assert result.output_tokens == 7
+    assert result.cache_read_input_tokens == 3
+    assert result.raw_response == {"codex_stream_fallback": True}
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_falls_back_to_collected_events_on_null_output_parse_error() -> None:
+    client = Mock()
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            SimpleNamespace(status="completed", output_text="", output=[], usage=None),
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+                SimpleNamespace(type="response.output_text.delta", delta=" from fallback"),
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=SimpleNamespace(
+                        type="function_call",
+                        call_id="call_weather",
+                        name="get_weather",
+                        arguments='{"city":"Miami"}',
+                    ),
+                ),
+            ],
+            iteration_exception=TypeError("'NoneType' object is not iterable"),
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    result = await backend.complete(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=100,
+        tools=[
+            {
+                "name": "get_weather",
+                "description": "Get weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                },
+            }
+        ],
+    )
+
+    assert result.content == "Hello from fallback"
+    assert result.tool_calls[0].id == "call_weather"
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].input == {"city": "Miami"}
+    assert result.raw_response == {"codex_stream_fallback": True}
 
 
 @pytest.mark.asyncio

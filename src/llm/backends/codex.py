@@ -60,15 +60,65 @@ class CodexResponsesBackend:
             thinking_effort=thinking_effort,
             extra_params=extra_params,
         )
-        async with self._client.responses.stream(**params) as stream:
-            async for _event in stream:
-                pass
-            response = await stream.get_final_response()
-        return self._normalize_response(
+        text_parts: list[str] = []
+        completed_items: list[Any] = []
+        finish_reason: str | None = None
+        output_tokens: int | None = None
+        input_tokens = 0
+        cache_read_tokens = 0
+
+        try:
+            async with self._client.responses.stream(**params) as stream:
+                async for event in stream:
+                    finish_reason, output_tokens, input_tokens, cache_read_tokens = (
+                        self._collect_stream_event(
+                            event,
+                            text_parts=text_parts,
+                            completed_items=completed_items,
+                            finish_reason=finish_reason,
+                            output_tokens=output_tokens,
+                            input_tokens=input_tokens,
+                            cache_read_tokens=cache_read_tokens,
+                        )
+                    )
+                response = await stream.get_final_response()
+        except TypeError as exc:
+            if not self._is_codex_null_output_parse_error(exc):
+                raise
+            logger.info(
+                "Codex Responses stream final parse failed with null output; using collected stream events"
+            )
+            return self._completion_from_stream_parts(
+                text_parts=text_parts,
+                completed_items=completed_items,
+                response_format=response_format,
+                model=model,
+                finish_reason=finish_reason or "stop",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=cache_read_tokens,
+            )
+
+        result = self._normalize_response(
             response,
             response_format=response_format,
             model=model,
         )
+        if self._completion_content_is_empty(result.content) and text_parts:
+            logger.info(
+                "Codex Responses final response was empty; using collected stream text"
+            )
+            return self._completion_from_stream_parts(
+                text_parts=text_parts,
+                completed_items=completed_items,
+                response_format=response_format,
+                model=model,
+                finish_reason=finish_reason or result.finish_reason,
+                input_tokens=result.input_tokens or input_tokens,
+                output_tokens=result.output_tokens or output_tokens or 0,
+                cache_read_tokens=result.cache_read_input_tokens or cache_read_tokens,
+            )
+        return result
 
     async def stream(
         self,
@@ -103,19 +153,28 @@ class CodexResponsesBackend:
         finish_reason: str | None = None
         output_tokens: int | None = None
         async with self._client.responses.stream(**params) as stream:
-            async for event in stream:
-                event_type = getattr(event, "type", "")
-                if event_type in {
-                    "response.output_text.delta",
-                    "response.refusal.delta",
-                }:
-                    delta = getattr(event, "delta", "")
-                    if isinstance(delta, str) and delta:
-                        yield StreamChunk(content=delta)
-                elif event_type in {"response.completed", "response.incomplete"}:
-                    response = getattr(event, "response", None)
-                    finish_reason = self._finish_reason(response)
-                    output_tokens = self._usage_output_tokens(getattr(response, "usage", None))
+            try:
+                async for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type in {
+                        "response.output_text.delta",
+                        "response.refusal.delta",
+                    }:
+                        delta = getattr(event, "delta", "")
+                        if isinstance(delta, str) and delta:
+                            yield StreamChunk(content=delta)
+                    elif event_type in {"response.completed", "response.incomplete"}:
+                        response = getattr(event, "response", None)
+                        finish_reason = self._finish_reason(response)
+                        output_tokens = self._usage_output_tokens(
+                            getattr(response, "usage", None)
+                        )
+            except TypeError as exc:
+                if not self._is_codex_null_output_parse_error(exc):
+                    raise
+                logger.info(
+                    "Codex Responses stream final parse failed with null output; ending stream with collected deltas"
+                )
 
             if output_tokens is None:
                 try:
@@ -146,6 +205,13 @@ class CodexResponsesBackend:
                     logger.debug(
                         "Codex Responses stream final usage failed during stream finalization: %s",
                         exc,
+                        exc_info=True,
+                    )
+                except TypeError as exc:
+                    if not self._is_codex_null_output_parse_error(exc):
+                        raise
+                    logger.debug(
+                        "Codex Responses stream final usage failed with null output parse error",
                         exc_info=True,
                     )
 
@@ -243,6 +309,77 @@ class CodexResponsesBackend:
             reasoning_details=self._response_reasoning_details(response),
             raw_response=response,
         )
+
+    def _completion_from_stream_parts(
+        self,
+        *,
+        text_parts: list[str],
+        completed_items: list[Any],
+        response_format: type[BaseModel] | dict[str, Any] | None,
+        model: str,
+        finish_reason: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+    ) -> CompletionResult:
+        content: Any = "".join(text_parts)
+        if isinstance(response_format, type):
+            parsed = repair_response_model_json(content, response_format, model)
+            content = validate_structured_output(parsed, response_format)
+        pseudo_response = type(
+            "CodexStreamFallbackResponse", (), {"output": completed_items}
+        )()
+        return CompletionResult(
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_tokens,
+            finish_reason=finish_reason,
+            tool_calls=self._response_tool_calls(pseudo_response),
+            reasoning_details=self._response_reasoning_details(pseudo_response),
+            raw_response={"codex_stream_fallback": True},
+        )
+
+    def _collect_stream_event(
+        self,
+        event: Any,
+        *,
+        text_parts: list[str],
+        completed_items: list[Any],
+        finish_reason: str | None,
+        output_tokens: int | None,
+        input_tokens: int,
+        cache_read_tokens: int,
+    ) -> tuple[str | None, int | None, int, int]:
+        event_type = getattr(event, "type", "")
+        if event_type in {"response.output_text.delta", "response.refusal.delta"}:
+            delta = getattr(event, "delta", "")
+            if isinstance(delta, str) and delta:
+                text_parts.append(delta)
+        elif event_type == "response.output_text.done":
+            text = getattr(event, "text", None)
+            if isinstance(text, str) and not text_parts:
+                text_parts.append(text)
+        elif event_type == "response.output_item.done":
+            item = getattr(event, "item", None)
+            if item is not None:
+                completed_items.append(item)
+        elif event_type in {"response.completed", "response.incomplete"}:
+            response = getattr(event, "response", None)
+            finish_reason = self._finish_reason(response)
+            usage = getattr(response, "usage", None)
+            output_tokens = self._usage_output_tokens(usage)
+            input_tokens = self._usage_input_tokens(usage)
+            cache_read_tokens = self._usage_cache_read_tokens(usage)
+        return finish_reason, output_tokens, input_tokens, cache_read_tokens
+
+    @staticmethod
+    def _completion_content_is_empty(content: Any) -> bool:
+        return isinstance(content, str) and content == ""
+
+    @staticmethod
+    def _is_codex_null_output_parse_error(exc: TypeError) -> bool:
+        return "NoneType" in str(exc) and "iterable" in str(exc)
 
     @staticmethod
     def _messages_to_responses(
