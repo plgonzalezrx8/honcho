@@ -479,7 +479,7 @@ class CodexResponsesBackend:
         if not isinstance(item_type, str) or not item_type.startswith("reasoning"):
             return None
         sanitized: dict[str, Any] = {"type": item_type}
-        for key in ("id", "summary", "content", "encrypted_content"):
+        for key in ("summary", "content", "encrypted_content"):
             value = item.get(key)
             if value is not None:
                 sanitized[key] = value
