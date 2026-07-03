@@ -191,6 +191,81 @@ async def test_codex_backend_falls_back_to_collected_events_on_null_output_parse
 
 
 @pytest.mark.asyncio
+async def test_codex_backend_reraises_null_output_parse_error_without_stream_parts() -> None:
+    client = Mock()
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            SimpleNamespace(status="completed", output_text="", output=[], usage=None),
+            iteration_exception=TypeError("'NoneType' object is not iterable"),
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    with pytest.raises(TypeError, match="NoneType"):
+        await backend.complete(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_final_empty_response_uses_streamed_tool_items() -> None:
+    client = Mock()
+    final_response = SimpleNamespace(status="completed", output_text="", output=[], usage=None)
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            final_response,
+            events=[
+                SimpleNamespace(
+                    type="response.output_item.done",
+                    item=SimpleNamespace(
+                        type="function_call",
+                        call_id="call_weather",
+                        name="get_weather",
+                        arguments='{"city":"Miami"}',
+                    ),
+                ),
+                SimpleNamespace(type="response.completed", response=final_response),
+            ],
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    result = await backend.complete(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": "Call a tool"}],
+        max_tokens=100,
+    )
+
+    assert result.content == ""
+    assert result.tool_calls[0].id == "call_weather"
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].input == {"city": "Miami"}
+    assert result.raw_response == {"codex_stream_fallback": True}
+
+
+@pytest.mark.asyncio
+async def test_codex_backend_stream_reraises_null_output_parse_error_without_signal() -> None:
+    client = Mock()
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            SimpleNamespace(status="completed", output_text="", output=[], usage=None),
+            iteration_exception=TypeError("'NoneType' object is not iterable"),
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    result: AsyncIterator[StreamChunk] = backend.stream(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=100,
+    )
+    with pytest.raises(TypeError, match="NoneType"):
+        _ = [chunk async for chunk in result]
+
+
+@pytest.mark.asyncio
 async def test_codex_backend_streams_and_normalizes_text() -> None:
     client = Mock()
     final_response = SimpleNamespace(
