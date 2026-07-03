@@ -466,8 +466,24 @@ class CodexResponsesBackend:
         items: list[dict[str, Any]] = []
         for value in cast(list[Any], raw_reasoning):
             if isinstance(value, dict):
-                items.append(cast(dict[str, Any], value))
+                sanitized = CodexResponsesBackend._sanitize_reasoning_item(
+                    cast(dict[str, Any], value)
+                )
+                if sanitized is not None:
+                    items.append(sanitized)
         return items
+
+    @staticmethod
+    def _sanitize_reasoning_item(item: dict[str, Any]) -> dict[str, Any] | None:
+        item_type = item.get("type")
+        if not isinstance(item_type, str) or not item_type.startswith("reasoning"):
+            return None
+        sanitized: dict[str, Any] = {"type": item_type}
+        for key in ("id", "summary", "content", "encrypted_content"):
+            value = item.get(key)
+            if value is not None:
+                sanitized[key] = value
+        return sanitized
 
     @staticmethod
     def _convert_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
@@ -602,9 +618,9 @@ class CodexResponsesBackend:
         for item in CodexResponsesBackend._response_output_items(response):
             if isinstance(item, dict):
                 item_dict = cast(dict[str, Any], item)
-                item_type = item_dict.get("type")
-                if isinstance(item_type, str) and item_type.startswith("reasoning"):
-                    details.append(item_dict)
+                sanitized = CodexResponsesBackend._sanitize_reasoning_item(item_dict)
+                if sanitized is not None:
+                    details.append(sanitized)
                 continue
             if getattr(item, "type", None) != "reasoning":
                 continue
@@ -612,7 +628,11 @@ class CodexResponsesBackend:
             if callable(model_dump):
                 dumped: Any = model_dump()
                 if isinstance(dumped, dict):
-                    details.append(cast(dict[str, Any], dumped))
+                    sanitized = CodexResponsesBackend._sanitize_reasoning_item(
+                        cast(dict[str, Any], dumped)
+                    )
+                    if sanitized is not None:
+                        details.append(sanitized)
                 continue
             detail: dict[str, Any] = {"type": "reasoning"}
             for key in ("id", "summary", "content", "encrypted_content"):
