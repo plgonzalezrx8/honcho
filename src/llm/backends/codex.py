@@ -83,7 +83,9 @@ class CodexResponsesBackend:
                     )
                 response = await stream.get_final_response()
         except TypeError as exc:
-            if not self._is_codex_null_output_parse_error(exc):
+            if not self._is_codex_null_output_parse_error(exc) or not (
+                text_parts or completed_items
+            ):
                 raise
             logger.info(
                 "Codex Responses stream final parse failed with null output; using collected stream events"
@@ -104,7 +106,9 @@ class CodexResponsesBackend:
             response_format=response_format,
             model=model,
         )
-        if self._completion_content_is_empty(result.content) and text_parts:
+        if self._completion_content_is_empty(result.content) and (
+            text_parts or completed_items
+        ):
             logger.info(
                 "Codex Responses final response was empty; using collected stream text"
             )
@@ -152,6 +156,7 @@ class CodexResponsesBackend:
 
         finish_reason: str | None = None
         output_tokens: int | None = None
+        saw_stream_signal = False
         async with self._client.responses.stream(**params) as stream:
             try:
                 async for event in stream:
@@ -162,15 +167,20 @@ class CodexResponsesBackend:
                     }:
                         delta = getattr(event, "delta", "")
                         if isinstance(delta, str) and delta:
+                            saw_stream_signal = True
                             yield StreamChunk(content=delta)
                     elif event_type in {"response.completed", "response.incomplete"}:
+                        saw_stream_signal = True
                         response = getattr(event, "response", None)
                         finish_reason = self._finish_reason(response)
                         output_tokens = self._usage_output_tokens(
                             getattr(response, "usage", None)
                         )
             except TypeError as exc:
-                if not self._is_codex_null_output_parse_error(exc):
+                if (
+                    not self._is_codex_null_output_parse_error(exc)
+                    or not saw_stream_signal
+                ):
                     raise
                 logger.info(
                     "Codex Responses stream final parse failed with null output; ending stream with collected deltas"
