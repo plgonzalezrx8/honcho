@@ -236,16 +236,16 @@ class CodexResponsesBackend:
         thinking_effort: str | None,
         extra_params: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        _ = thinking_budget_tokens
+        # The ChatGPT Codex Responses endpoint rejects max_output_tokens and
+        # temperature even though the public Responses API accepts them. Keep
+        # them intentionally unused for this subscription-OAuth transport.
+        _ = (max_tokens, temperature, thinking_budget_tokens)
         instructions, input_items = self._messages_to_responses(messages)
         params: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "max_output_tokens": max_tokens,
             "store": False,
         }
-        if temperature is not None:
-            params["temperature"] = temperature
         params["instructions"] = instructions or DEFAULT_CODEX_INSTRUCTIONS
         if stop:
             params["stop"] = stop
