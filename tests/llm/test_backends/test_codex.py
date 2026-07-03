@@ -428,14 +428,13 @@ async def test_codex_backend_converts_tools_and_tool_results() -> None:
     assert result.reasoning_details == [
         {
             "type": "reasoning",
-            "id": "rs_123",
             "summary": [{"text": "checking weather"}],
         }
     ]
 
     call = client.responses.stream.call_args.kwargs
     assert call["input"] == [
-        {"type": "reasoning", "id": "rs_prev", "summary": [{"text": "checking weather"}]},
+        {"type": "reasoning", "summary": [{"text": "checking weather"}]},
         {
             "type": "function_call",
             "call_id": "call_weather",
