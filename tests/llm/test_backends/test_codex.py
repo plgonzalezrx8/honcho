@@ -96,8 +96,8 @@ async def test_codex_backend_uses_responses_stream_and_normalizes_text() -> None
     assert call["model"] == "gpt-5.5"
     assert call["instructions"] == "Be terse."
     assert call["input"] == [{"role": "user", "content": "Hello"}]
-    assert call["max_output_tokens"] == 100
-    assert call["temperature"] == 0.2
+    assert "max_output_tokens" not in call
+    assert "temperature" not in call
     assert call["store"] is False
     assert call["reasoning"] == {"effort": "low", "summary": "auto"}
 
@@ -236,7 +236,7 @@ async def test_codex_backend_streams_and_normalizes_text() -> None:
     assert call["model"] == "gpt-5.5"
     assert call["instructions"] == "Be terse."
     assert call["input"] == [{"role": "user", "content": "Hello"}]
-    assert call["max_output_tokens"] == 100
+    assert "max_output_tokens" not in call
     assert call["store"] is False
     assert call["reasoning"] == {"effort": "low", "summary": "auto"}
 
