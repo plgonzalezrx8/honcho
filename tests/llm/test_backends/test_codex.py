@@ -356,6 +356,13 @@ async def test_codex_backend_converts_tools_and_tool_results() -> None:
                         type="reasoning",
                         id="rs_123",
                         summary=[{"text": "checking weather"}],
+                        status="completed",
+                        model_dump=lambda: {
+                            "type": "reasoning",
+                            "id": "rs_123",
+                            "summary": [{"text": "checking weather"}],
+                            "status": "completed",
+                        },
                     ),
                     SimpleNamespace(
                         type="function_call",
@@ -377,7 +384,12 @@ async def test_codex_backend_converts_tools_and_tool_results() -> None:
                 "role": "assistant",
                 "content": None,
                 "reasoning_details": [
-                    {"type": "reasoning", "summary": [{"text": "checking weather"}]}
+                    {
+                        "type": "reasoning",
+                        "id": "rs_prev",
+                        "status": "completed",
+                        "summary": [{"text": "checking weather"}],
+                    }
                 ],
                 "tool_calls": [
                     {
@@ -423,7 +435,7 @@ async def test_codex_backend_converts_tools_and_tool_results() -> None:
 
     call = client.responses.stream.call_args.kwargs
     assert call["input"] == [
-        {"type": "reasoning", "summary": [{"text": "checking weather"}]},
+        {"type": "reasoning", "id": "rs_prev", "summary": [{"text": "checking weather"}]},
         {
             "type": "function_call",
             "call_id": "call_weather",
