@@ -143,6 +143,48 @@ async def test_codex_backend_uses_stream_text_when_final_response_is_empty() -> 
     assert result.raw_response == {"codex_stream_fallback": True}
 
 
+
+@pytest.mark.asyncio
+async def test_codex_backend_uses_stream_text_for_structured_output_when_final_response_is_empty() -> None:
+    client = Mock()
+    final_response = SimpleNamespace(
+        status="completed",
+        output_text="",
+        output=[],
+        usage=SimpleNamespace(
+            input_tokens=11,
+            output_tokens=7,
+            input_tokens_details=SimpleNamespace(cached_tokens=3),
+        ),
+    )
+    client.responses.stream = Mock(
+        return_value=FakeResponsesStream(
+            final_response,
+            events=[
+                SimpleNamespace(
+                    type="response.output_text.delta",
+                    delta='{\"answer\":\"HONCHO_OK\"}',
+                ),
+                SimpleNamespace(type="response.completed", response=final_response),
+            ],
+        )
+    )
+
+    backend = CodexResponsesBackend(client)
+    result = await backend.complete(
+        model="gpt-5.5",
+        messages=[{"role": "user", "content": "Reply with structured JSON"}],
+        max_tokens=100,
+        response_format=StructuredCodexResponse,
+    )
+
+    assert isinstance(result.content, StructuredCodexResponse)
+    assert result.content.answer == "HONCHO_OK"
+    assert result.input_tokens == 11
+    assert result.output_tokens == 7
+    assert result.cache_read_input_tokens == 3
+    assert result.raw_response == {"codex_stream_fallback": True}
+
 @pytest.mark.asyncio
 async def test_codex_backend_falls_back_to_collected_events_on_null_output_parse_error() -> None:
     client = Mock()

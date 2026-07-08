@@ -101,6 +101,23 @@ class CodexResponsesBackend:
                 cache_read_tokens=cache_read_tokens,
             )
 
+        final_response_text = self._response_text(response)
+        if not final_response_text and (text_parts or completed_items):
+            logger.info(
+                "Codex Responses final response was empty; using collected stream text"
+            )
+            usage = getattr(response, "usage", None)
+            return self._completion_from_stream_parts(
+                text_parts=text_parts,
+                completed_items=completed_items,
+                response_format=response_format,
+                model=model,
+                finish_reason=finish_reason or self._finish_reason(response) or "stop",
+                input_tokens=input_tokens or self._usage_input_tokens(usage),
+                output_tokens=output_tokens or self._usage_output_tokens(usage) or 0,
+                cache_read_tokens=cache_read_tokens or self._usage_cache_read_tokens(usage),
+            )
+
         result = self._normalize_response(
             response,
             response_format=response_format,
@@ -110,7 +127,7 @@ class CodexResponsesBackend:
             text_parts or completed_items
         ):
             logger.info(
-                "Codex Responses final response was empty; using collected stream text"
+                "Codex Responses final response was empty after normalization; using collected stream text"
             )
             return self._completion_from_stream_parts(
                 text_parts=text_parts,
