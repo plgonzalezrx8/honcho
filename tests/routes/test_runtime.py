@@ -257,3 +257,10 @@ def test_llm_runtime_exposes_fallback_model_metadata(
         "base_url": None,
         "fallback": None,
     }
+
+
+def test_runtime_openapi_schema_renders_recursive_fallback() -> None:
+    response = _runtime_client().get("/openapi.json")
+
+    assert response.status_code == 200
+    assert "RuntimeModelInfo" in response.json()["components"]["schemas"]
