@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, ParamSpec, TypeVar
@@ -333,6 +334,16 @@ async def stream_final_response(
         yield chunk
 
 
+async def _resolve_attempt_plan(
+    get_attempt_plan: Callable[[], AttemptPlan | Awaitable[AttemptPlan]],
+) -> AttemptPlan:
+    """Accept both legacy synchronous and OAuth-aware asynchronous planners."""
+    candidate = get_attempt_plan()
+    if inspect.isawaitable(candidate):
+        return await candidate
+    return candidate
+
+
 @_with_iteration_scope
 async def execute_tool_loop(
     *,
@@ -351,7 +362,7 @@ async def execute_tool_loop(
     enable_retry: bool,
     retry_attempts: int,
     max_input_tokens: int | None,
-    get_attempt_plan: Callable[[], Awaitable[AttemptPlan]],
+    get_attempt_plan: Callable[[], AttemptPlan | Awaitable[AttemptPlan]],
     before_retry_callback: Callable[[Any], None],
     stream_final: bool = False,
     iteration_callback: IterationCallback | None = None,
@@ -433,7 +444,7 @@ async def execute_tool_loop(
                 captured_messages: list[dict[str, Any]] = conversation_messages,
                 iteration_for_call: int = iteration + 1,
             ) -> HonchoLLMCallResponse[Any]:
-                plan = await get_attempt_plan()
+                plan = await _resolve_attempt_plan(get_attempt_plan)
                 return await honcho_llm_call_inner(
                     plan.provider,
                     plan.model,
@@ -515,7 +526,7 @@ async def execute_tool_loop(
                     # Snapshot the plan that just succeeded — streaming retries
                     # pin to this exact client/model so we don't bounce back to
                     # primary after the tool loop settled on fallback.
-                    winning_plan = await get_attempt_plan()
+                    winning_plan = await _resolve_attempt_plan(get_attempt_plan)
                     # +2 (not +1): the in-loop call we just made used iteration+1,
                     # so the streamed tail needs the next ordinal — otherwise its
                     # trace resource id collides with that call's. Mirrors the
@@ -565,7 +576,7 @@ async def execute_tool_loop(
                 )
                 return response
 
-            current_provider = (await get_attempt_plan()).provider
+            current_provider = (await _resolve_attempt_plan(get_attempt_plan)).provider
 
             assistant_message = format_assistant_tool_message(
                 current_provider,
@@ -684,7 +695,7 @@ async def execute_tool_loop(
     if stream_final:
         # Snapshot the plan the loop settled on — streaming retries pin to
         # this exact client/model rather than re-running provider selection.
-        winning_plan = await get_attempt_plan()
+        winning_plan = await _resolve_attempt_plan(get_attempt_plan)
         stream_telemetry = _telemetry_for_iteration(
             telemetry, synthesis_iteration, step_seq=synthesis_iteration
         )
@@ -722,7 +733,7 @@ async def execute_tool_loop(
     current_attempt.set(1)
 
     async def _final_call() -> HonchoLLMCallResponse[Any]:
-        plan = await get_attempt_plan()
+        plan = await _resolve_attempt_plan(get_attempt_plan)
         return await honcho_llm_call_inner(
             plan.provider,
             plan.model,

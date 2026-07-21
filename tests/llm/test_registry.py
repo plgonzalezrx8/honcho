@@ -12,6 +12,7 @@ from src.llm import registry
 from src.llm.backends.codex import CodexResponsesBackend
 from src.llm.codex_oauth import CodexOAuthCredentials
 from src.llm.registry import _default_headers_for  # pyright: ignore[reportPrivateUsage]
+from src.llm.types import ProviderClient
 
 
 def test_default_headers_for_openrouter_base_url() -> None:
@@ -29,9 +30,6 @@ def test_default_headers_for_non_openrouter_base_url() -> None:
 def test_default_headers_for_none_base_url() -> None:
     """A missing base URL (default OpenAI) gets no extra headers."""
     assert _default_headers_for(None) == {}
-
-from src.llm.types import ProviderClient
-
 
 def test_codex_oauth_client_bypasses_default_openai_client(
     monkeypatch: pytest.MonkeyPatch,
